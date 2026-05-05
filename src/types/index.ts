@@ -11,7 +11,7 @@ export interface CodexAuthConfig {
   last_refresh: string;
 }
 
-// 从JWT解析出的账号信息
+// 从 JWT 解析出的账号信息
 export interface AccountInfo {
   email: string;
   planType: 'free' | 'plus' | 'pro' | 'team';
@@ -64,33 +64,43 @@ export interface UsageInfo {
   sourceFile?: string;
 }
 
-// 存储的账号数据
+// 内存中的账号数据，id 使用云端认证文件的 identityKey
 export interface StoredAccount {
   id: string;
-  alias: string; // 用户自定义别名
+  alias: string;
   accountInfo: AccountInfo;
   usageInfo?: UsageInfo;
-  isActive: boolean; // 是否是当前激活账号
+  isActive: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
+// 个人云端保险柜配置，只保存本地偏好，不保存账号列表
+export interface CloudVaultConfig {
+  apiBaseUrl: string;
+  vaultKey: string;
+  activeIdentityKey: string | null;
+  reloadIntervalMinutes: number;
+  lastLoadedAt?: string;
+}
+
 // 应用配置
 export interface AppConfig {
-  autoRefreshInterval: number; // 自动刷新间隔（分钟）
-  codexPath: string; // Codex CLI路径
+  autoRefreshInterval: number;
+  codexPath: string;
   closeBehavior: 'ask' | 'exit' | 'tray';
   theme: 'dark' | 'light';
-  hasInitialized: boolean; // 是否已尝试过首次自动同步
+  hasInitialized: boolean;
   proxyEnabled: boolean;
   proxyUrl: string;
   autoRestartCodexOnSwitch: boolean;
   skipSwitchRestartConfirm: boolean;
+  cloudVault: CloudVaultConfig;
 }
 
-// 账号存储文件结构
+// 本地配置文件结构；accounts 仅用于读取旧版本数据时兼容迁移，不再作为账号来源
 export interface AccountsStore {
   version: string;
-  accounts: StoredAccount[];
+  accounts?: StoredAccount[];
   config: AppConfig;
 }

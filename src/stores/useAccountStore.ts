@@ -1,15 +1,14 @@
 import { create } from 'zustand';
-import type { StoredAccount, AccountsStore, AppConfig, UsageInfo, CodexAuthConfig } from '../types';
+import type { AppConfig, CodexAuthConfig, StoredAccount, UsageInfo } from '../types';
 import {
-  loadAccountsStore,
-  saveAccountsStore,
-  switchToAccount as switchAccount,
   addAccount as addAccountToStore,
-  removeAccount as removeAccountFromStore,
-  updateAccountUsage as updateUsage,
-  syncCurrentAccount as syncCurrent,
   isMissingIdentityError,
-  refreshAccountsWorkspaceMetadata,
+  loadAccountsFromVault,
+  loadAccountsStore,
+  removeAccount as removeAccountFromStore,
+  switchToAccount as switchAccount,
+  syncCurrentAccount as syncCurrent,
+  updateAppConfig,
   type AddAccountOptions,
 } from '../utils/storage';
 
@@ -20,7 +19,7 @@ interface AccountState {
   isLoading: boolean;
   error: string | null;
 
-  loadAccounts: () => Promise<void>;
+  loadAccounts: (options?: { silent?: boolean }) => Promise<void>;
   syncCurrentAccount: () => Promise<void>;
   addAccount: (authJson: string, alias?: string, options?: AddAccountOptions) => Promise<void>;
   removeAccount: (accountId: string) => Promise<void>;
@@ -42,14 +41,58 @@ const DEFAULT_CONFIG: AppConfig = {
   proxyUrl: 'http://127.0.0.1:7890',
   autoRestartCodexOnSwitch: false,
   skipSwitchRestartConfirm: false,
+  cloudVault: {
+    apiBaseUrl: '',
+    vaultKey: '',
+    activeIdentityKey: null,
+    reloadIntervalMinutes: 0,
+    lastLoadedAt: undefined,
+  },
 };
 
-function buildStateFromStore(store: AccountsStore) {
-  const activeAccount = store.accounts.find((account) => account.isActive);
+function buildState(accounts: StoredAccount[], config: AppConfig) {
+  const activeAccount = accounts.find((account) => account.isActive);
   return {
-    accounts: store.accounts,
+    accounts,
     activeAccountId: activeAccount?.id ?? null,
-    config: { ...DEFAULT_CONFIG, ...store.config },
+    config: {
+      ...DEFAULT_CONFIG,
+      ...config,
+      cloudVault: {
+        ...DEFAULT_CONFIG.cloudVault,
+        ...config.cloudVault,
+      },
+    },
+  };
+}
+
+async function loadCloudState() {
+  const accounts = await loadAccountsFromVault();
+  const store = await loadAccountsStore();
+  return buildState(accounts, store.config);
+}
+
+function mergeAccountsWithUsage(
+  nextAccounts: StoredAccount[],
+  currentAccounts: StoredAccount[]
+): StoredAccount[] {
+  const usageByAccountId = new Map(
+    currentAccounts
+      .filter((account) => account.usageInfo)
+      .map((account) => [account.id, account.usageInfo])
+  );
+
+  return nextAccounts.map((account) => {
+    const usageInfo = usageByAccountId.get(account.id);
+    return usageInfo ? { ...account, usageInfo } : account;
+  });
+}
+
+async function loadMergedCloudState(currentAccounts: StoredAccount[]) {
+  const state = await loadCloudState();
+  return {
+    ...state,
+    accounts: mergeAccountsWithUsage(state.accounts, currentAccounts),
   };
 }
 
@@ -59,40 +102,36 @@ function invalidatePendingLoads(): void {
   latestLoadRequestId += 1;
 }
 
-export const useAccountStore = create<AccountState>((set) => ({
+export const useAccountStore = create<AccountState>((set, get) => ({
   accounts: [],
   activeAccountId: null,
   config: DEFAULT_CONFIG,
   isLoading: false,
   error: null,
 
-  loadAccounts: async () => {
+  loadAccounts: async (options = {}) => {
     const requestId = ++latestLoadRequestId;
-    set({ isLoading: true, error: null });
+    if (!options.silent) {
+      set({ isLoading: true, error: null });
+    }
 
     try {
-      const initialStore = await loadAccountsStore();
-      await syncCurrent();
-      await refreshAccountsWorkspaceMetadata(initialStore.config);
-      const finalStore = await loadAccountsStore();
-
+      const state = await loadMergedCloudState(get().accounts);
       if (requestId !== latestLoadRequestId) {
         return;
       }
-
       set({
-        ...buildStateFromStore(finalStore),
-        isLoading: false,
+        ...state,
+        isLoading: options.silent ? get().isLoading : false,
         error: null,
       });
     } catch (error) {
       if (requestId !== latestLoadRequestId) {
         return;
       }
-
       set({
-        isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to load accounts',
+        isLoading: options.silent ? get().isLoading : false,
+        error: error instanceof Error ? error.message : '加载云端保险柜失败',
       });
     }
   },
@@ -100,10 +139,10 @@ export const useAccountStore = create<AccountState>((set) => ({
   syncCurrentAccount: async () => {
     try {
       await syncCurrent();
-      const store = await loadAccountsStore();
-      set(buildStateFromStore(store));
+      const state = await loadMergedCloudState(get().accounts);
+      set(state);
     } catch (error) {
-      console.error('Failed to sync current account:', error);
+      console.error('同步当前账号状态失败:', error);
     }
   },
 
@@ -113,12 +152,8 @@ export const useAccountStore = create<AccountState>((set) => ({
     try {
       const authConfig = JSON.parse(authJson) as CodexAuthConfig;
       await addAccountToStore(authConfig, alias, options);
-      const store = await loadAccountsStore();
-      set({
-        ...buildStateFromStore(store),
-        isLoading: false,
-        error: null,
-      });
+      const state = await loadMergedCloudState(get().accounts);
+      set({ ...state, isLoading: false, error: null });
     } catch (error) {
       if (isMissingIdentityError(error)) {
         set({ isLoading: false, error: null });
@@ -127,7 +162,7 @@ export const useAccountStore = create<AccountState>((set) => ({
 
       set({
         isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to add account',
+        error: error instanceof Error ? error.message : '保存认证文件失败',
       });
       throw error;
     }
@@ -138,16 +173,12 @@ export const useAccountStore = create<AccountState>((set) => ({
     set({ isLoading: true, error: null });
     try {
       await removeAccountFromStore(accountId);
-      const store = await loadAccountsStore();
-      set({
-        ...buildStateFromStore(store),
-        isLoading: false,
-        error: null,
-      });
+      const state = await loadMergedCloudState(get().accounts);
+      set({ ...state, isLoading: false, error: null });
     } catch (error) {
       set({
         isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to remove account',
+        error: error instanceof Error ? error.message : '删除云端认证文件失败',
       });
     }
   },
@@ -157,46 +188,34 @@ export const useAccountStore = create<AccountState>((set) => ({
     set({ isLoading: true, error: null });
     try {
       await switchAccount(accountId);
-      const store = await loadAccountsStore();
-      set({
-        ...buildStateFromStore(store),
-        isLoading: false,
-        error: null,
-      });
+      const state = await loadMergedCloudState(get().accounts);
+      set({ ...state, isLoading: false, error: null });
     } catch (error) {
       set({
         isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to switch account',
+        error: error instanceof Error ? error.message : '切换账号失败',
       });
     }
   },
 
   updateUsage: async (accountId: string, usage: UsageInfo) => {
-    try {
-      await updateUsage(accountId, usage);
-      const store = await loadAccountsStore();
-      set(buildStateFromStore(store));
-    } catch (error) {
-      console.error('Failed to update usage:', error);
-    }
+    set({
+      accounts: get().accounts.map((account) =>
+        account.id === accountId
+          ? { ...account, usageInfo: usage, updatedAt: new Date().toISOString() }
+          : account
+      ),
+    });
   },
 
   updateConfig: async (config: Partial<AppConfig>) => {
-    const store = await loadAccountsStore();
-    const nextStore: AccountsStore = {
-      ...store,
-      config: {
-        ...store.config,
-        ...config,
-      },
-    };
-
-    await saveAccountsStore(nextStore);
-    set(buildStateFromStore(nextStore));
+    await updateAppConfig(config);
+    const state = await loadMergedCloudState(get().accounts);
+    set(state);
   },
 
   refreshAllUsage: async () => {
-    console.log('Refreshing all usage...');
+    console.log('刷新全部用量...');
   },
 
   setError: (message: string) => set({ error: message }),

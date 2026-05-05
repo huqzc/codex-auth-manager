@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "codex-auth-vault",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-05",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "codex-auth-vault",
+      "database_id": "c947555a-988c-41c1-b0f3-0fd52cbcdbdd",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

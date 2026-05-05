@@ -134,6 +134,96 @@
 - `npm run build`：通过
 - `cargo fmt --all`：通过
 - `cargo check --lib`：失败，原因仍为当前环境缺少 MSVC `link.exe`
+
+## 编码前检查 - 个人云端保险柜
+时间：2026-05-05 16:36:58
+
+□ 已查阅上下文摘要文件：`.Codex/context-summary-cloud-vault.md`
+□ 将使用以下可复用组件：
+  - `src/utils/storage.ts`：复用认证文件解析、切换账号写入 `.codex/auth.json`、本地配置读写入口。
+  - `src/stores/useAccountStore.ts`：复用 Zustand 状态契约，把账号列表来源改为云端保险柜。
+  - `src-tauri/src/lib.rs`：复用 wham API、代理和 Tauri command 模式，新增从 auth 内容查询的命令。
+  - `src/components/Header.tsx` / `src/components/SettingsModal.tsx`：复用顶部入口与设置弹窗承接云端保险柜操作。
+□ 将遵循命名约定：前端 camelCase，Rust snake_case，Worker JSON 使用 camelCase。
+□ 将遵循代码风格：前端工具分层、Tauri 只处理系统/网络能力、Worker 使用 D1 binding。
+□ 确认不重复造轮子，证明：已检查本地账号导入、备份导入、切换、用量刷新、设置和 Header 操作入口，仓库内没有个人云端保险柜、客户端密文保管或 D1 Worker 实现。
+□ 工具补充说明：当前会话没有可调用的 `desktop-commander`、`sequential-thinking`、`context7`、`github.search_code`，已使用 PowerShell 只读检索、Cloudflare 官方文档和本地代码分析替代并留痕。
+
+## 编码后声明 - 个人云端保险柜
+时间：2026-05-05 16:50:00
+
+### 1. 复用了以下既有组件
+- `src/utils/storage.ts`：保留本地配置读写、当前 Codex auth 读取、切换账号写入 `.codex/auth.json` 的职责，但账号列表改为云端实时加载。
+- `src/stores/useAccountStore.ts`：保留 UI 调用契约，改为从云端保险柜构建内存账号状态，用量信息不写回云端。
+- `src-tauri/src/lib.rs`：复用已有 wham 请求和代理处理，新增 `get_wham_account_metadata_from_auth` 与 `get_codex_wham_usage_from_auth`。
+- `Header` 与 `SettingsModal`：保留原交互容器，新增云端保险柜配置、连接测试、重新加载列表、保存当前登录和添加认证文件入口。
+
+### 2. 遵循了以下项目约定
+- 命名约定：前端新增 `cloudVault`、`loadAccountsFromVault`、`saveAuthConfigToCloudVault`；Rust 新增命令仍为 snake_case；Worker API 保持 `/v1/...` 与 camelCase JSON。
+- 代码风格：账号身份逻辑拆入 `accountIdentity.ts`，云端加密与 HTTP 调用拆入 `cloudVault.ts`，没有把 Worker/D1 细节塞进 React 组件。
+- 文件组织：云端服务独立在 `cloud-worker/`，包含 `src`、`test`、`migrations`、`wrangler.jsonc` 和部署说明。
+
+### 3. 对比了以下相似实现
+- 本地 `addAccount` 原先写本地 auth 文件并更新 accounts store；现在保存密文到云端后重新加载列表，符合云端唯一来源。
+- 原 `switchToAccount` 读取本地 per-account auth；现在实时从云端取 auth 并写入 Codex 当前认证文件。
+- 原备份导入/导出容易形成双源语义；Header 已移除备份入口，保留“添加认证文件”和“保存当前登录”。
+- 原 wham 命令读取本地账号 auth 文件；新增命令直接接收 auth JSON，避免保留本地账号认证副本。
+
+### 4. 未重复造轮子的证明
+- 已检查 `storage.ts`、`useAccountStore.ts`、`useAutoRefresh.ts`、`Header.tsx`、`SettingsModal.tsx`、`src-tauri/src/lib.rs`，确认没有现成云端保险柜实现。
+- 身份键生成复用 JWT 解析结果和既有身份字段，不新增独立账号 ID 体系或用户表。
+- Worker 使用 D1 binding 和 Wrangler 配置，不自研数据库访问层。
+
+### 5. 本地验证结果
+- `npm run lint`：通过
+- `npm run build`：通过
+- `cargo fmt --all`：通过
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib`：通过
+- `cargo check --manifest-path src-tauri/Cargo.toml --locked`：通过
+- `cd cloud-worker && npm run typecheck`：通过
+- `cd cloud-worker && npm test`：通过，3 个测试通过
+- `cd cloud-worker && npx wrangler d1 migrations apply codex-auth-vault --local`：通过
+
+### 6. 风险复核
+- 托盘菜单当前仍由 Rust 读取旧本地 store，主窗口已经按云端保险柜作为唯一账号来源；后续如需托盘切换，应让前端把云端列表的只读展示快照传给 Rust，避免 Rust 端重复实现云端解密。
+- 多机器同时保存同一认证文件时后写入覆盖先写入，符合本轮“不要冲突操作”的个人保险柜模型。
+
+## 编码前检查 - 云端列表重载保留用量
+时间：2026-05-05 17:06:54
+
+□ 已查阅上下文摘要文件：`.Codex/context-summary-cloud-vault.md`
+□ 将使用以下可复用组件：
+  - `src/stores/useAccountStore.ts`：在云端列表进入 Zustand 前合并旧 `usageInfo`。
+  - `src/App.tsx`：复用现有 `loadAccounts` 入口增加定时重新加载列表。
+  - `src/components/SettingsModal.tsx`：复用设置滑块配置列表重载间隔。
+  - `src/types/index.ts` / `src/utils/storage.ts`：扩展 `cloudVault` 本地配置默认值。
+□ 将遵循命名约定：新增字段使用 `reloadIntervalMinutes`，仍归属 `cloudVault` 配置。
+□ 将遵循代码风格：定时器放在 App 统一编排，数据合并放在 store 层，避免组件自行保留用量缓存。
+□ 确认不重复造轮子，证明：已检查 `useAutoRefresh` 和 `useAccountStore.updateUsage`，刷新用量本身已按单账号覆盖，真正清空来自 `loadCloudState` 整体替换账号数组。
+
+## 编码后声明 - 云端列表重载保留用量
+时间：2026-05-05 17:12:00
+
+### 1. 复用了以下既有组件
+- `SettingsModal`：沿用滑块模式新增“重新加载列表间隔”。
+- `App.loadAccounts`：作为手动和定时重新加载列表的统一入口。
+- `useAccountStore`：在所有云端列表落入状态前统一合并旧用量。
+
+### 2. 遵循了以下项目约定
+- 配置仍写入本地 `accounts.json` 的 `config.cloudVault`，不引入新的配置文件。
+- 状态更新仍通过 Zustand 完成，不在组件里分散缓存模型用量。
+- 列表重新加载只更新认证文件列表和账号元数据，不覆盖已有 `usageInfo`。
+
+### 3. 对比了以下相似实现
+- `autoRefreshInterval` 用于模型用量刷新；新增 `cloudVault.reloadIntervalMinutes` 专门控制云端列表重新加载，避免两种定时任务混用。
+- `updateUsage` 原本只覆盖目标账号用量；现在列表刷新也按同一原则保留其他账号现有用量。
+
+### 4. 未重复造轮子的证明
+- 已检查 `useAutoRefresh.refreshAllUsage`、`refreshSingleAccount`、`updateUsage`、`loadAccounts`，确认无需新增第二套用量存储，只需在云端列表替换前做按账号 id 合并。
+
+### 5. 本地验证结果
+- `npm run lint`：通过
+- `npm run build`：通过
 - PowerShell 实机验证：已解析出 `shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App`，说明桌面版 Codex App 可通过系统应用入口唤醒，而非直接依附 `Codex.exe` 控制台进程
 
 ### 6. 风险复核

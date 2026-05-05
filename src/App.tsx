@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { open, save } from '@tauri-apps/plugin-dialog';
 import {
   AccountCard,
   AccountFilters,
@@ -29,8 +28,6 @@ import {
 import { getAccountExpiryBucket, getSubscriptionExpirationState } from './utils/accountStatus';
 import { syncCodexProxyEnv } from './utils/codexEnv';
 import {
-  exportAccountsBackup,
-  importAccountsBackup,
   isMissingIdentityError,
   type AddAccountOptions,
 } from './utils/storage';
@@ -110,6 +107,7 @@ function App() {
   const [toast, setToast] = useState<{ message: string; tone: 'success' | 'warning' } | null>(null);
   const [filters, setFilters] = useState<AccountFilterState>(DEFAULT_ACCOUNT_FILTERS);
   const autoImportInFlightRef = useRef(false);
+  const autoReloadInFlightRef = useRef(false);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isHandlingWindowCloseRef = useRef(false);
   const ignoreCloseRequestUntilRef = useRef(0);
@@ -172,6 +170,31 @@ function App() {
 
   useEffect(() => {
     if (!hasLoadedAccounts) return;
+    if (!config.cloudVault.apiBaseUrl.trim() || !config.cloudVault.vaultKey.trim()) return;
+
+    const intervalMinutes = config.cloudVault.reloadIntervalMinutes;
+    if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) return;
+
+    const timer = setInterval(() => {
+      if (autoReloadInFlightRef.current) return;
+
+      autoReloadInFlightRef.current = true;
+      void loadAccounts({ silent: true }).finally(() => {
+        autoReloadInFlightRef.current = false;
+      });
+    }, Math.max(1, Math.round(intervalMinutes)) * 60_000);
+
+    return () => clearInterval(timer);
+  }, [
+    config.cloudVault.apiBaseUrl,
+    config.cloudVault.reloadIntervalMinutes,
+    config.cloudVault.vaultKey,
+    hasLoadedAccounts,
+    loadAccounts,
+  ]);
+
+  useEffect(() => {
+    if (!hasLoadedAccounts) return;
 
     let cancelled = false;
 
@@ -191,6 +214,11 @@ function App() {
       }
 
       if (config.hasInitialized || autoImportInFlightRef.current) {
+        finishInitializing();
+        return;
+      }
+
+      if (!config.cloudVault.apiBaseUrl.trim() || !config.cloudVault.vaultKey.trim()) {
         finishInitializing();
         return;
       }
@@ -228,7 +256,16 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [accounts.length, addAccount, clearError, config.hasInitialized, hasLoadedAccounts, updateConfig]);
+  }, [
+    accounts.length,
+    addAccount,
+    clearError,
+    config.cloudVault.apiBaseUrl,
+    config.cloudVault.vaultKey,
+    config.hasInitialized,
+    hasLoadedAccounts,
+    updateConfig,
+  ]);
 
   useEffect(() => {
     if (!shouldInitialRefresh || accounts.length === 0) return;
@@ -419,7 +456,7 @@ function App() {
     setQuickLoginState({
       isOpen: true,
       phase: 'starting',
-      title: '快速登录并导入',
+      title: '快速登录并保存到云端',
       message: '正在启动 Codex 登录流程，请稍候。',
       detail: config.codexPath || 'codex',
       canClose: false,
@@ -430,7 +467,7 @@ function App() {
       setQuickLoginState({
         isOpen: true,
         phase: 'waiting',
-        title: '快速登录并导入',
+        title: '快速登录并保存到云端',
         message: '已启动 Codex 登录，请在浏览器中完成授权。若不想继续，可以直接取消等待。',
         detail: config.codexPath || 'codex',
         canClose: false,
@@ -464,8 +501,8 @@ function App() {
       setQuickLoginState({
         isOpen: true,
         phase: 'importing',
-        title: '快速登录并导入',
-        message: '已检测到新的 auth 配置，正在导入账号并同步状态。',
+        title: '快速登录并保存到云端',
+        message: '已检测到新的 auth 配置，正在保存到云端保险柜。',
         detail: formatChangedAtDetail(result.changedAt),
         canClose: false,
         canCancel: false,
@@ -490,12 +527,12 @@ function App() {
         isOpen: true,
         phase: 'success',
         title: '快速登录完成',
-        message: '账号已成功导入并同步为当前登录状态。',
+        message: '认证文件已保存到云端保险柜，并设为当前登录状态。',
         detail: formatChangedAtDetail(result.changedAt),
         canClose: true,
         canCancel: false,
       });
-      showToast('快速登录并导入成功', 'success');
+      showToast('已保存到云端保险柜', 'success');
     } catch (currentError) {
       setQuickLoginState({
         isOpen: true,
@@ -532,67 +569,19 @@ function App() {
       await syncCurrentAccount();
       setShouldInitialRefresh(true);
       if (addedNewAccount) {
-        showToast('已导入并同步当前登录账号', 'success');
+        showToast('当前登录已保存到云端保险柜', 'success');
+      } else {
+        showToast('云端认证文件已更新', 'success');
       }
       return true;
-    } catch {
-      setError('未找到当前 Codex 配置文件，请先完成 Codex 登录。');
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : '保存当前登录失败');
       return false;
     }
   };
 
   const handleSyncAccount = async () => {
     await syncCurrentCodexAccount();
-  };
-
-  const handleImportBackup = async () => {
-    try {
-      const selected = await open({
-        multiple: false,
-        filters: [
-          {
-            name: 'Codex Manager Backup',
-            extensions: ['json'],
-          },
-        ],
-      });
-
-      if (!selected || Array.isArray(selected)) return;
-
-      const backupJson = await invoke<string>('read_file_content', {
-        filePath: selected,
-      });
-      const result = await importAccountsBackup(backupJson);
-      await loadAccounts();
-      showToast(`已导入 ${result.importedCount} 个账号`, 'success');
-    } catch (currentError) {
-      setError(currentError instanceof Error ? currentError.message : '导入备份失败');
-    }
-  };
-
-  const handleExportBackup = async () => {
-    try {
-      const filePath = await save({
-        defaultPath: `codex-manager-backup-${new Date().toISOString().slice(0, 10)}.json`,
-        filters: [
-          {
-            name: 'Codex Manager Backup',
-            extensions: ['json'],
-          },
-        ],
-      });
-
-      if (!filePath) return;
-
-      const backupJson = await exportAccountsBackup();
-      await invoke('write_file_content', {
-        filePath,
-        content: backupJson,
-      });
-      showToast('备份已导出', 'success');
-    } catch (currentError) {
-      setError(currentError instanceof Error ? currentError.message : '导出备份失败');
-    }
   };
 
   const handleConfirmIdentityImport = async () => {
@@ -608,7 +597,7 @@ function App() {
         setShouldInitialRefresh(true);
       }
     } catch (currentError) {
-      setError(currentError instanceof Error ? currentError.message : '导入失败');
+      setError(currentError instanceof Error ? currentError.message : '保存到云端失败');
     }
   };
 
@@ -672,7 +661,7 @@ function App() {
         showToast('已清理 Codex 环境文件中的代理变量', 'success');
       }
     } catch (currentError) {
-      setError(currentError instanceof Error ? currentError.message : '同步 Codex 代理配置失败');
+      setError(currentError instanceof Error ? currentError.message : '写入 Codex 代理配置失败');
     } finally {
       setIsSyncingCodexProxyEnv(false);
     }
@@ -863,8 +852,7 @@ function App() {
           onAddAccount={() => setShowAddModal(true)}
           onQuickLogin={handleQuickLogin}
           onReadCurrentAccount={handleSyncAccount}
-          onImportBackup={handleImportBackup}
-          onExportBackup={handleExportBackup}
+          onReloadAccounts={loadAccounts}
           onRefreshAll={handleRefreshAll}
           onSyncCodexProxyEnv={handleSyncCodexProxyEnv}
           onToggleAutoRestartCodex={handleToggleAutoRestartCodex}
@@ -994,7 +982,7 @@ function App() {
       <QuickLoginModal
         isOpen={!!quickLoginState?.isOpen}
         phase={quickLoginState?.phase || 'starting'}
-        title={quickLoginState?.title || '快速登录并导入'}
+        title={quickLoginState?.title || '快速登录并保存到云端'}
         message={quickLoginState?.message || ''}
         detail={quickLoginState?.detail}
         canClose={quickLoginState?.canClose}
@@ -1038,8 +1026,8 @@ function App() {
 
       <ConfirmDialog
         isOpen={deleteConfirm.isOpen}
-        title="删除账号"
-        message={`确定要删除账号 “${deleteConfirm.accountName}” 吗？此操作无法撤销。`}
+        title="删除云端认证文件"
+        message={`确定要从云端保险柜删除 “${deleteConfirm.accountName}” 吗？此操作无法撤销。`}
         confirmText="删除"
         cancelText="取消"
         variant="danger"
@@ -1055,8 +1043,8 @@ function App() {
       <ConfirmDialog
         isOpen={!!identityConfirm?.isOpen}
         title="账号身份信息缺失"
-        message="未检测到有效的账号邮箱或用户 ID。继续导入可能导致账号无法区分，建议确认后再决定是否导入。"
-        confirmText="继续导入"
+        message="未检测到有效的账号邮箱或用户 ID。继续保存可能导致账号无法区分，建议确认后再决定是否保存。"
+        confirmText="继续保存"
         cancelText="取消"
         variant="warning"
         onConfirm={handleConfirmIdentityImport}
@@ -1072,7 +1060,7 @@ function App() {
       <footer className="fixed bottom-0 left-0 right-0 bg-white/70 border-t border-[var(--dash-border)] py-2 px-5 backdrop-blur z-40">
         <div className="max-w-7xl mx-auto flex items-center justify-between text-xs text-[var(--dash-text-muted)]">
           <span>Codex Manager v0.2.0</span>
-          <span>数据存储于本地</span>
+          <span>认证文件来自云端保险柜</span>
         </div>
       </footer>
     </>

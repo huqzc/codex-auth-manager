@@ -1660,6 +1660,19 @@ async fn get_wham_account_metadata(
     fetch_wham_account_metadata(&auth_json, proxy_enabled, proxy_url).await
 }
 
+#[tauri::command]
+async fn get_wham_account_metadata_from_auth(
+    auth_config: String,
+    proxy_enabled: Option<bool>,
+    proxy_url: Option<String>,
+) -> Result<Option<WhamAccountMetadata>, String> {
+    if auth_config.trim().is_empty() {
+        return Ok(None);
+    }
+
+    fetch_wham_account_metadata(&auth_config, proxy_enabled, proxy_url).await
+}
+
 // ==================== 用量解析相关结构 ====================
 
 #[derive(Debug, Deserialize)]
@@ -2251,6 +2264,32 @@ async fn get_codex_wham_usage(
     }
 
     let auth_json = read_account_auth(account_id)?;
+    get_codex_wham_usage_from_auth_json(auth_json, proxy_enabled, proxy_url).await
+}
+
+#[tauri::command]
+async fn get_codex_wham_usage_from_auth(
+    auth_config: String,
+    proxy_enabled: Option<bool>,
+    proxy_url: Option<String>,
+) -> Result<UsageResult, String> {
+    if auth_config.trim().is_empty() {
+        return Ok(UsageResult {
+            status: "missing_token".to_string(),
+            message: Some("\u{7f3a}\u{5c11} auth.json \u{5185}\u{5bb9}".to_string()),
+            plan_type: None,
+            usage: None,
+        });
+    }
+
+    get_codex_wham_usage_from_auth_json(auth_config, proxy_enabled, proxy_url).await
+}
+
+async fn get_codex_wham_usage_from_auth_json(
+    auth_json: String,
+    proxy_enabled: Option<bool>,
+    proxy_url: Option<String>,
+) -> Result<UsageResult, String> {
     let auth: AuthConfig = serde_json::from_str(&auth_json).map_err(|e| e.to_string())?;
     let tokens = match auth.tokens {
         Some(tokens) => tokens,
@@ -2625,7 +2664,9 @@ pub fn run() {
             get_home_dir,
             restart_codex_processes,
             get_wham_account_metadata,
+            get_wham_account_metadata_from_auth,
             get_codex_wham_usage,
+            get_codex_wham_usage_from_auth,
             get_usage_from_sessions,
             get_bound_usage,
             get_usage_from_file,
