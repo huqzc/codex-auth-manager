@@ -135,6 +135,30 @@
 - `cargo fmt --all`：通过
 - `cargo check --lib`：失败，原因仍为当前环境缺少 MSVC `link.exe`
 
+## 发布前检查与版本提升 - 0.2.1
+时间：2026-05-05 19:55:01
+
+### 1. 检查结论
+- 当前 `main` 分支已包含个人云端保险柜、README 部署说明、云端列表重新加载保留用量、启动时不自动刷新用量等改动。
+- 复查代理默认值：`DEFAULT_CONFIG.proxyEnabled` 仍为 `false`，未发现代码层面的默认开启。
+- 复查用量刷新：`updateUsage` 只覆盖目标账号；云端列表重新加载会按账号 id 合并旧 `usageInfo`。
+- 复查 Worker 检查脚本：`wrangler check` 在当前 Wrangler 版本只显示子命令帮助，已改为 `wrangler deploy --dry-run`，用于部署前验证配置和绑定。
+
+### 2. 版本提升
+- 桌面端版本从 `0.2.0` 提升到 `0.2.1`。
+- 同步更新 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json`、`src/App.tsx`、`src/components/SettingsModal.tsx`。
+
+### 3. 本地验证结果
+- `npm run lint`：通过
+- `npm run build`：通过
+- `cargo fmt --manifest-path src-tauri\Cargo.toml --all`：通过
+- `cargo test --manifest-path src-tauri\Cargo.toml --lib`：通过，13 个测试通过
+- `cargo check --manifest-path src-tauri\Cargo.toml --locked`：通过
+- `cd cloud-worker && npm run typecheck`：通过
+- `cd cloud-worker && npm test`：通过，3 个测试通过
+- `cd cloud-worker && npm run check`：通过，执行 `wrangler deploy --dry-run`
+- `cd cloud-worker && npx wrangler d1 migrations apply codex-auth-vault --local`：通过
+
 ## 编码前检查 - 个人云端保险柜
 时间：2026-05-05 16:36:58
 

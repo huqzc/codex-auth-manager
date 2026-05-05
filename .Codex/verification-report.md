@@ -62,3 +62,32 @@
 
 ## 四、结论
 本次改动满足个人云端保险柜方案：认证文件以客户端加密密文保管到 Cloudflare D1，桌面端不再把本地账号列表作为来源，新增/保存当前登录会写入云端并刷新列表。建议通过。
+
+## 六、发布前追加验证：0.2.1
+生成时间：2026-05-05 19:55:01
+
+### 审查结论
+- 技术维度评分：94/100
+  - 版本号已同步覆盖前端包、Tauri 配置、Rust 包和界面展示。
+  - Worker 检查脚本已从无实际校验效果的 `wrangler check` 改为 `wrangler deploy --dry-run`。
+  - 代理默认值仍为关闭；云端列表重新加载和用量刷新均不会清空其他认证文件的用量显示。
+- 战略维度评分：93/100
+  - 当前交付物匹配个人云端保险柜方案，README 已覆盖 Cloudflare D1 创建、migration、Worker 部署和桌面端配置。
+  - 版本提升采用补丁版本 `0.2.1`，适合本轮稳定性与文档完善交付。
+- 综合评分：94/100
+- 建议：通过
+
+### 验证结果
+- `npm run lint`：通过
+- `npm run build`：通过
+- `cargo fmt --manifest-path src-tauri\Cargo.toml --all`：通过
+- `cargo test --manifest-path src-tauri\Cargo.toml --lib`：通过，13 个测试通过
+- `cargo check --manifest-path src-tauri\Cargo.toml --locked`：通过
+- `cd cloud-worker && npm run typecheck`：通过
+- `cd cloud-worker && npm test`：通过，3 个测试通过
+- `cd cloud-worker && npm run check`：通过，执行 `wrangler deploy --dry-run`
+- `cd cloud-worker && npx wrangler d1 migrations apply codex-auth-vault --local`：通过
+
+### 残余风险
+- Wrangler 在当前环境检测到代理环境变量并使用代理进行请求，这是环境提示，不影响 dry-run 结果。
+- 云端远端 migration 和正式部署需要使用实际 Cloudflare 账号执行，本次未对远端资源做写入操作。
