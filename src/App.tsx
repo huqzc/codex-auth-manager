@@ -25,7 +25,7 @@ import {
   type LimitFilterValue,
   type PlanFilterValue,
 } from './types/accountFilters';
-import { getAccountExpiryBucket, getSubscriptionExpirationState } from './utils/accountStatus';
+import { getAccountExpiryBucket } from './utils/accountStatus';
 import { syncCodexProxyEnv } from './utils/codexEnv';
 import {
   isMissingIdentityError,
@@ -763,17 +763,6 @@ function App() {
   };
 
   const handleSwitchAccount = async (account: StoredAccount) => {
-    const isSubscriptionExpired =
-      getSubscriptionExpirationState(account.accountInfo.subscriptionActiveUntil) === 'expired';
-
-    if (isSubscriptionExpired) {
-      const synced = await syncCurrentCodexAccount();
-      if (synced) {
-        showToast('\u76ee\u6807\u8d26\u53f7\u5df2\u8fc7\u671f\uff0c\u5df2\u540c\u6b65\u5f53\u524d Codex \u767b\u5f55\u8d26\u53f7', 'warning');
-      }
-      return;
-    }
-
     if (config.autoRestartCodexOnSwitch && !config.skipSwitchRestartConfirm) {
       setSwitchRestartConfirm({
         isOpen: true,
@@ -1059,7 +1048,7 @@ function App() {
 
       <footer className="fixed bottom-0 left-0 right-0 bg-white/70 border-t border-[var(--dash-border)] py-2 px-5 backdrop-blur z-40">
         <div className="max-w-7xl mx-auto flex items-center justify-between text-xs text-[var(--dash-text-muted)]">
-          <span>Codex Manager v0.2.1</span>
+          <span>Codex Manager v0.2.2</span>
           <span>认证文件来自云端保险柜</span>
         </div>
       </footer>

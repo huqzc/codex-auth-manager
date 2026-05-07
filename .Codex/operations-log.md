@@ -135,6 +135,47 @@
 - `cargo fmt --all`：通过
 - `cargo check --lib`：失败，原因仍为当前环境缺少 MSVC `link.exe`
 
+## 编码前检查 - 0.2.2 自动发布说明
+时间：2026-05-07 19:05:00
+
+□ 已查阅上下文摘要文件：.Codex/context-summary-release-0.2.2.md
+□ 将使用以下可复用组件：
+  - `.github/workflows/release.yml`：继续作为 tag 发布入口
+  - `.github/release.yml`：使用 GitHub 原生自动发布说明分类
+  - `package.json` / `package-lock.json`：同步前端版本
+  - `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock`：同步 Tauri 与 Rust 版本
+□ 将遵循命名约定：tag 使用 `v0.2.2`，提交信息使用简体中文
+□ 将遵循代码风格：YAML 两空格缩进，版本展示继续使用既有页脚与关于区位置
+□ 确认不重复造轮子，证明：复用 GitHub 自动 Release Notes 与 Tauri Action，不新增自研发布脚本
+
+## 编码后声明 - 0.2.2 自动发布说明
+时间：2026-05-07 19:18:00
+
+### 1. 复用了以下既有组件
+- `.github/workflows/release.yml`：保留 `v*` tag 触发和 Tauri Action 发布链路。
+- `.github/release.yml`：新增 GitHub 原生 changelog 分类配置。
+- 版本元数据文件：统一更新前端包、Tauri 配置、Rust 根包和 UI 展示版本。
+
+### 2. 遵循了以下项目约定
+- 命名约定：发布 tag 使用 `v0.2.2`，Release 标题继续由 `Codex Manager v__VERSION__` 生成。
+- 代码风格：YAML 保持两空格缩进，未新增发布脚本或额外依赖。
+- 文件组织：GitHub workflow 与 release notes 配置仍放在 `.github/` 下。
+
+### 3. 对比了以下相似实现
+- 相比 0.2.1：移除 workflow 中的硬编码 Release 正文，改用 `generateReleaseNotes: true`。
+- 相比既有 Windows 构建 workflow：继续保留 artifact 构建与 Release 发布分离的结构。
+- 相比历史版本提升：继续同步 `package`、Tauri、Cargo 和界面版本，不保留旧版本展示。
+
+### 4. 未重复造轮子的证明
+- 已确认 GitHub 原生自动发布说明可以覆盖本次需求，无需新增 changelog 生成脚本。
+- 已检查远端不存在 `v0.2.2` tag，确认可以创建新发布标签。
+
+### 5. 本地验证结果
+- `git diff --check`：通过
+- `npm run lint`：通过
+- `npm run build`：通过
+- `cargo check --manifest-path src-tauri\Cargo.toml --locked`：通过
+
 ## 发布前检查与版本提升 - 0.2.1
 时间：2026-05-05 19:55:01
 
@@ -158,6 +199,19 @@
 - `cd cloud-worker && npm test`：通过，3 个测试通过
 - `cd cloud-worker && npm run check`：通过，执行 `wrangler deploy --dry-run`
 - `cd cloud-worker && npx wrangler d1 migrations apply codex-auth-vault --local`：通过
+
+## 修复 - 过期账号切换与设置自动保存
+时间：2026-05-07 18:40:00
+
+### 1. 需求处理
+- 移除切换账号前的订阅过期拦截，过期账号仍允许写入 `%USERPROFILE%\.codex\auth.json`。
+- 设置弹窗移除“取消/保存”按钮，设置项变更后自动保存。
+- 点击设置蒙层时会先保存未落盘改动，再关闭弹窗；保存失败时保留弹窗并显示错误。
+- 配置保存不再触发云端列表加载，避免设置页输入时反复访问云端保险柜。
+
+### 2. 本地验证结果
+- `npm run lint`：通过
+- `npm run build`：通过
 
 ## 编码前检查 - 个人云端保险柜
 时间：2026-05-05 16:36:58

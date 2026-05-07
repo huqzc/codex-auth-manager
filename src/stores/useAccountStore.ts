@@ -210,8 +210,13 @@ export const useAccountStore = create<AccountState>((set, get) => ({
 
   updateConfig: async (config: Partial<AppConfig>) => {
     await updateAppConfig(config);
-    const state = await loadMergedCloudState(get().accounts);
-    set(state);
+    const store = await loadAccountsStore();
+    const activeIdentityKey = store.config.cloudVault.activeIdentityKey;
+    const accounts = get().accounts.map((account) => ({
+      ...account,
+      isActive: activeIdentityKey ? account.id === activeIdentityKey : false,
+    }));
+    set(buildState(accounts, store.config));
   },
 
   refreshAllUsage: async () => {

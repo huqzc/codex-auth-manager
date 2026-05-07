@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppConfig } from '../types';
 import { loadVaultMeta } from '../utils/cloudVault';
 
@@ -7,6 +7,44 @@ interface SettingsModalProps {
   config: AppConfig;
   onClose: () => void;
   onSave: (config: Partial<AppConfig>) => Promise<void>;
+}
+
+type SettingsDraft = {
+  autoRefreshInterval: number;
+  codexPath: string;
+  closeBehavior: AppConfig['closeBehavior'];
+  proxyEnabled: boolean;
+  proxyUrl: string;
+  cloudApiBaseUrl: string;
+  cloudVaultKey: string;
+  cloudReloadIntervalMinutes: number;
+};
+
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
+function buildNextConfig(config: AppConfig, draft: SettingsDraft): Partial<AppConfig> {
+  const normalizedAutoRefreshInterval =
+    draft.autoRefreshInterval <= 0 ? 0 : Math.max(1, Math.round(draft.autoRefreshInterval));
+  const normalizedCloudReloadInterval =
+    draft.cloudReloadIntervalMinutes <= 0 ? 0 : Math.max(1, Math.round(draft.cloudReloadIntervalMinutes));
+
+  return {
+    autoRefreshInterval: normalizedAutoRefreshInterval,
+    codexPath: draft.codexPath,
+    closeBehavior: draft.closeBehavior,
+    proxyEnabled: draft.proxyEnabled,
+    proxyUrl: draft.proxyUrl,
+    cloudVault: {
+      ...config.cloudVault,
+      apiBaseUrl: draft.cloudApiBaseUrl.trim(),
+      vaultKey: draft.cloudVaultKey.trim(),
+      reloadIntervalMinutes: normalizedCloudReloadInterval,
+    },
+  };
+}
+
+function serializeConfig(config: Partial<AppConfig>): string {
+  return JSON.stringify(config);
 }
 
 function SettingsModalContent({ config, onClose, onSave }: Omit<SettingsModalProps, 'isOpen'>) {
@@ -20,52 +58,125 @@ function SettingsModalContent({ config, onClose, onSave }: Omit<SettingsModalPro
   const [cloudReloadIntervalMinutes, setCloudReloadIntervalMinutes] = useState(
     config.cloudVault.reloadIntervalMinutes
   );
-  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [isTestingCloud, setIsTestingCloud] = useState(false);
   const [cloudMessage, setCloudMessage] = useState<string | null>(null);
+  const latestConfigRef = useRef(config);
+  const hasMountedRef = useRef(false);
+  const lastSavedSignatureRef = useRef('');
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveRequestIdRef = useRef(0);
 
-  const buildNextConfig = (): Partial<AppConfig> => {
-    const normalizedAutoRefreshInterval =
-      autoRefreshInterval <= 0 ? 0 : Math.max(1, Math.round(autoRefreshInterval));
-    const normalizedCloudReloadInterval =
-      cloudReloadIntervalMinutes <= 0 ? 0 : Math.max(1, Math.round(cloudReloadIntervalMinutes));
+  useEffect(() => {
+    latestConfigRef.current = config;
+  }, [config]);
 
-    return {
-      autoRefreshInterval: normalizedAutoRefreshInterval,
+  const buildCurrentConfig = useCallback(() =>
+    buildNextConfig(latestConfigRef.current, {
+      autoRefreshInterval,
       codexPath,
       closeBehavior,
       proxyEnabled,
       proxyUrl,
-      cloudVault: {
-        ...config.cloudVault,
-        apiBaseUrl: cloudApiBaseUrl.trim(),
-        vaultKey: cloudVaultKey.trim(),
-        reloadIntervalMinutes: normalizedCloudReloadInterval,
-      },
-    };
-  };
+      cloudApiBaseUrl,
+      cloudVaultKey,
+      cloudReloadIntervalMinutes,
+    }), [
+      autoRefreshInterval,
+      codexPath,
+      closeBehavior,
+      proxyEnabled,
+      proxyUrl,
+      cloudApiBaseUrl,
+      cloudVaultKey,
+      cloudReloadIntervalMinutes,
+    ]);
 
-  const handleSave = async () => {
-    setIsSaving(true);
-    try {
-      await onSave(buildNextConfig());
-      onClose();
-    } catch (error) {
-      setCloudMessage(error instanceof Error ? error.message : '保存设置失败');
-    } finally {
-      setIsSaving(false);
+  const saveDraft = useCallback(async (
+    nextConfig: Partial<AppConfig>,
+    signature: string
+  ): Promise<boolean> => {
+    if (signature === lastSavedSignatureRef.current) {
+      return true;
     }
-  };
+
+    const requestId = ++saveRequestIdRef.current;
+    setSaveStatus('saving');
+    setCloudMessage(null);
+    try {
+      await onSave(nextConfig);
+      if (requestId === saveRequestIdRef.current) {
+        lastSavedSignatureRef.current = signature;
+        setSaveStatus('saved');
+      }
+      return true;
+    } catch (error) {
+      if (requestId === saveRequestIdRef.current) {
+        setSaveStatus('error');
+        setCloudMessage(error instanceof Error ? error.message : '保存设置失败');
+      }
+      return false;
+    }
+  }, [onSave]);
+
+  const flushAndClose = useCallback(async () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+
+    const nextConfig = buildCurrentConfig();
+    const signature = serializeConfig(nextConfig);
+    const saved = await saveDraft(nextConfig, signature);
+    if (saved) {
+      onClose();
+    }
+  }, [buildCurrentConfig, onClose, saveDraft]);
+
+  useEffect(() => {
+    const nextConfig = buildCurrentConfig();
+    const signature = serializeConfig(nextConfig);
+
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      lastSavedSignatureRef.current = signature;
+      return undefined;
+    }
+
+    if (signature === lastSavedSignatureRef.current) {
+      return undefined;
+    }
+
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+
+    setSaveStatus('saving');
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      void saveDraft(nextConfig, signature);
+    }, 500);
+
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, [
+    buildCurrentConfig,
+    saveDraft,
+  ]);
 
   const handleTestCloudVault = async () => {
     setIsTestingCloud(true);
     setCloudMessage(null);
     try {
       await loadVaultMeta({
-        ...config,
-        ...buildNextConfig(),
+        ...latestConfigRef.current,
+        ...buildCurrentConfig(),
         cloudVault: {
-          ...config.cloudVault,
+          ...latestConfigRef.current.cloudVault,
           apiBaseUrl: cloudApiBaseUrl.trim(),
           vaultKey: cloudVaultKey.trim(),
         },
@@ -78,19 +189,47 @@ function SettingsModalContent({ config, onClose, onSave }: Omit<SettingsModalPro
     }
   };
 
+  const saveStatusText = {
+    idle: '',
+    saving: '保存中...',
+    saved: '已保存',
+    error: '保存失败',
+  }[saveStatus];
+
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 animate-fade-in">
-      <div className="bg-white rounded-2xl p-6 w-full max-w-xl mx-4 border border-[var(--dash-border)] shadow-[0_24px_60px_rgba(15,23,42,0.2)] max-h-[90vh] overflow-auto">
+    <div
+      className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 animate-fade-in"
+      onClick={() => {
+        void flushAndClose();
+      }}
+    >
+      <div
+        className="bg-white rounded-2xl p-6 w-full max-w-xl mx-4 border border-[var(--dash-border)] shadow-[0_24px_60px_rgba(15,23,42,0.2)] max-h-[90vh] overflow-auto"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="flex justify-between items-center mb-5">
           <h2 className="text-base font-semibold text-[var(--dash-text-primary)]">设置</h2>
-          <button
-            onClick={onClose}
-            className="w-9 h-9 flex items-center justify-center text-[var(--dash-text-muted)] hover:text-[var(--dash-text-primary)] hover:bg-slate-100 rounded-full transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <div className="flex items-center gap-3">
+            {saveStatusText && (
+              <span
+                className={`text-xs ${
+                  saveStatus === 'error' ? 'text-red-500' : 'text-[var(--dash-text-muted)]'
+                }`}
+              >
+                {saveStatusText}
+              </span>
+            )}
+            <button
+              onClick={() => {
+                void flushAndClose();
+              }}
+              className="w-9 h-9 flex items-center justify-center text-[var(--dash-text-muted)] hover:text-[var(--dash-text-primary)] hover:bg-slate-100 rounded-full transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div className="space-y-5">
@@ -264,28 +403,12 @@ function SettingsModalContent({ config, onClose, onSave }: Omit<SettingsModalPro
           <div className="pt-4 border-t border-slate-200">
             <h3 className="text-[var(--dash-text-secondary)] text-xs font-medium mb-2">关于</h3>
             <div className="space-y-1 text-sm text-[var(--dash-text-secondary)]">
-              <p>Codex Manager v0.2.1</p>
+              <p>Codex Manager v0.2.2</p>
               <p className="text-xs text-[var(--dash-text-muted)]">
                 个人云端保险柜模式：云端保管认证文件，本机按需加载。
               </p>
             </div>
           </div>
-        </div>
-
-        <div className="flex gap-2 mt-5">
-          <button
-            onClick={onClose}
-            className="flex-1 h-10 bg-slate-100 hover:bg-slate-200 text-[var(--dash-text-primary)] rounded-xl text-sm transition-colors"
-          >
-            取消
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="flex-1 h-10 bg-[var(--dash-accent)] hover:brightness-110 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-sm font-medium transition-colors"
-          >
-            {isSaving ? '保存中...' : '保存'}
-          </button>
         </div>
       </div>
     </div>
@@ -300,20 +423,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const modalKey = [
-    config.autoRefreshInterval,
-    config.codexPath,
-    config.closeBehavior,
-    config.proxyEnabled,
-    config.proxyUrl,
-    config.cloudVault.apiBaseUrl,
-    config.cloudVault.vaultKey,
-    config.cloudVault.reloadIntervalMinutes,
-  ].join('|');
-
   return (
     <SettingsModalContent
-      key={modalKey}
       config={config}
       onClose={onClose}
       onSave={onSave}
